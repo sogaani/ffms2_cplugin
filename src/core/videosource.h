@@ -77,6 +77,7 @@ private:
 
     FFMS_VideoProperties VP = {};
     FFMS_Frame LocalFrame = {};
+    AVFrame *TempFrame = nullptr;
     AVFrame *DecodeFrame = nullptr;
     AVFrame *LastDecodedFrame = nullptr;
     int LastFrameNum = 0;

@@ -21,6 +21,7 @@
 #include "videosource.h"
 #include "indexing.h"
 #include "videoutils.h"
+#include "vaapidecoder.h"
 #include <algorithm>
 #include <thread>
 
@@ -157,10 +158,11 @@ FFMS_VideoSource::FFMS_VideoSource(const char *SourceFile, FFMS_Index &Index, in
         else
             DecodingThreads = Threads;
 
+        TempFrame = av_frame_alloc();
         DecodeFrame = av_frame_alloc();
         LastDecodedFrame = av_frame_alloc();
 
-        if (!DecodeFrame || !LastDecodedFrame)
+        if (!DecodeFrame || !LastDecodedFrame || !TempFrame)
             throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_ALLOCATION_FAILED,
                 "Could not allocate dummy frame.");
 
@@ -185,6 +187,11 @@ FFMS_VideoSource::FFMS_VideoSource(const char *SourceFile, FFMS_Index &Index, in
                 "Could not copy video decoder parameters.");
         CodecContext->thread_count = DecodingThreads;
         CodecContext->has_b_frames = Frames.MaxBFrames;
+        CodecContext->get_format   = get_vaapi_format;
+
+        if (vaapi_decoder_init(CodecContext) < 0)
+            throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_CODEC,
+                "Could not init vaapi decoder.");
 
         // Full explanation by more clever person availale here: https://github.com/Nevcairiel/LAVFilters/issues/113
         if (CodecContext->codec_id == AV_CODEC_ID_H264 && CodecContext->has_b_frames)
@@ -352,6 +359,9 @@ void FFMS_VideoSource::SetInputFormat(int ColorSpace, int ColorRange, AVPixelFor
 void FFMS_VideoSource::DetectInputFormat() {
     if (InputFormat == AV_PIX_FMT_NONE)
         InputFormat = CodecContext->pix_fmt;
+    
+    if (InputFormat == AV_PIX_FMT_VAAPI)
+        InputFormat = AV_PIX_FMT_NV12;
 
     AVColorRange RangeFromFormat = handle_jpeg(&InputFormat);
 
@@ -531,7 +541,17 @@ bool FFMS_VideoSource::DecodePacket(AVPacket *Packet) {
     std::swap(DecodeFrame, LastDecodedFrame);
     avcodec_send_packet(CodecContext, Packet);
 
-    int Ret = avcodec_receive_frame(CodecContext, DecodeFrame);
+    AVFrame *frame = DecodeFrame;
+
+    if (CodecContext->pix_fmt == AV_PIX_FMT_VAAPI) {
+        frame = TempFrame;
+    }
+
+    int Ret = avcodec_receive_frame(CodecContext, frame);
+    if (Ret == AVERROR(EAGAIN)) {
+        return false;
+    }
+
     if (Ret != 0) {
         std::swap(DecodeFrame, LastDecodedFrame);
         if (!(Packet->flags & AV_PKT_FLAG_DISCARD))
@@ -546,6 +566,10 @@ bool FFMS_VideoSource::DecodePacket(AVPacket *Packet) {
     if (Ret == 0 && InitialDecode == 1)
         InitialDecode = -1;
 
+    if (Ret == 0 && CodecContext->pix_fmt == AV_PIX_FMT_VAAPI){
+        retrieve_data(DecodeFrame, frame);
+    }
+
     // H.264 (PAFF) and HEVC can have one field per packet, and decoding delay needs
     // to be adjusted accordingly.
     if (CodecContext->codec_id == AV_CODEC_ID_H264 || CodecContext->codec_id == AV_CODEC_ID_HEVC) {
@@ -556,7 +580,7 @@ bool FFMS_VideoSource::DecodePacket(AVPacket *Packet) {
         }
     }
 
-    return (Ret == 0) || (DelayCounter > Delay && !InitialDecode);;
+    return (Ret == 0) || (DelayCounter > Delay && !InitialDecode);
 }
 
 int FFMS_VideoSource::Seek(int n) {
@@ -601,6 +625,7 @@ void FFMS_VideoSource::Free() {
     avformat_close_input(&FormatContext);
     if (SWS)
         sws_freeContext(SWS);
+    vaapi_decoder_uninit(CodecContext);
     av_freep(&SWSFrameData[0]);
     av_frame_free(&DecodeFrame);
     av_frame_free(&LastDecodedFrame);

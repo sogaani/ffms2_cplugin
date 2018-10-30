@@ -11,7 +11,8 @@ endif
 
 CORE_C   =
 
-CORE_CXX = src/core/audiosource.cpp     \
+CORE_CXX = src/core/vaapidecoder.cpp    \
+           src/core/audiosource.cpp     \
            src/core/ffms.cpp            \
            src/core/filehandle.cpp      \
            src/core/indexing.cpp        \
