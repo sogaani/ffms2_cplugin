@@ -311,10 +311,11 @@ int FFMS_AudioSource::DecodeNextBlock(CacheIterator *pos) {
         }
     }
 
+    ++PacketNumber;
+
     // Zero sample packets aren't included in the index
     if (!NumberOfSamples)
         return NumberOfSamples;
-    ++PacketNumber;
 
     // Add padding after the packet, if needed
     if (!CachedBlock || CachedBlock->Samples == CurrentFrame->SampleCount)
